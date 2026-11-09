@@ -1,0 +1,440 @@
+#!/usr/bin/env node
+import { parseArgs } from "node:util";
+import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { paths, readJson, saveJson, redact } from "../lib/config.mjs";
+import { Client } from "../lib/client.mjs";
+import * as auth from "../lib/auth.mjs";
+import * as works from "../lib/works.mjs";
+import { BrowserSession } from "../lib/browser.mjs";
+import { loadManifest, runBatch, resolveJob } from "../lib/batch.mjs";
+const commands = [
+  "auth login",
+  "auth capture",
+  "auth status",
+  "doctor",
+  "albums list",
+  "albums create",
+  "albums info",
+  "albums tracks",
+  "works list",
+  "works info",
+  "works update",
+  "works batch-update",
+  "scheduled list",
+  "upload",
+  "publish",
+  "batch",
+  "jobs list",
+  "jobs resolve",
+  "config list",
+  "config get",
+  "config set",
+  "commands list",
+  "completion",
+];
+const strings = [
+  "profile",
+  "id",
+  "album-id",
+  "page",
+  "page-size",
+  "keyword",
+  "file",
+  "manifest",
+  "title",
+  "intro",
+  "intro-file",
+  "tags",
+  "visibility",
+  "ai",
+  "publish-at",
+  "cover-id",
+  "timeout-ms",
+  "space-id",
+  "upload-id",
+  "file-ext",
+  "category-id",
+  "cover-path",
+  "cover-ai",
+  "subtitle",
+  "resolution",
+  "track-id",
+];
+const bools = [
+  "help",
+  "dry-run",
+  "publish",
+  "retry-failed",
+  "compact",
+  "quiet",
+];
+const options = Object.fromEntries([
+  ...strings.map((x) => [x, { type: "string" }]),
+  ...bools.map((x) => [x, { type: "boolean" }]),
+]);
+options.help.short = "h";
+function help() {
+  return `喜马拉雅创作中心 CLI（Node.js 22+）
+
+用法：xmly <命令> [选项]
+
+  auth login                         打开浏览器扫码登录
+  auth capture [--space-id N]         登录后保存凭据
+  auth status                        查看本地凭据摘要
+  doctor                             只读检查登录与上传权限
+  albums list [--keyword 文本]        专辑列表
+  albums create --title 名称 --subtitle 卖点 --category-id 分类ID
+                --cover-path 上传后路径 --cover-ai true|false [--dry-run]
+  albums info --id ID                 专辑信息
+  albums tracks --id ID               专辑内作品
+  works list                         作品列表
+  works info --id ID                  作品完整编辑信息
+  works update --id ID [设置]         修改作品，支持 --dry-run
+  works batch-update --manifest 文件  批量修改作品，支持 --dry-run
+  scheduled list                     定时发布列表
+  upload --file 音频                  仅传输文件，返回 uploadId
+  upload --file 音频 --publish --album-id ID --ai false [设置]
+  publish --upload-id ID --file-ext mp3 --title 标题 --album-id ID --ai true|false
+  batch --manifest 文件 [--publish]   按清单依次上传，支持 --dry-run
+  jobs list                          查看批量任务记录
+  jobs resolve --id 指纹 --resolution done|retry  人工核对后处理结果不确定项
+  config list|get|set [键] [值]       用户配置
+  commands list                      命令注册表
+  completion bash|zsh|fish            生成补全脚本
+
+设置：--title 标题 --intro 简介 --intro-file 文件 --tags JSON
+      --visibility public|private|friends --ai true|false
+      --publish-at ISO时间 --cover-id 上传后的封面ID
+通用：--profile default --page 1 --page-size 20 --compact --quiet
+批量任务通过文件内容指纹跳过已完成项。结果不确定时停止自动重传。
+上传和发布签名使用 Ego Lite 中的官方网页运行时。
+`;
+}
+function integer(v, name) {
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n <= 0)
+    throw new Error(`${name} 必须是正整数`);
+  return n;
+}
+function boolean(v) {
+  if (v === undefined) return undefined;
+  if (!["true", "false"].includes(v))
+    throw new Error("--ai 必须是 true 或 false");
+  return v === "true";
+}
+async function settings(v) {
+  return {
+    ...(v.title !== undefined ? { title: v.title } : {}),
+    ...(v.intro !== undefined ? { intro: v.intro } : {}),
+    ...(v["intro-file"]
+      ? { intro: await readFile(resolve(v["intro-file"]), "utf8") }
+      : {}),
+    ...(v.tags ? { tags: JSON.parse(v.tags) } : {}),
+    ...(v.visibility ? { visibility: v.visibility } : {}),
+    ...(v.ai !== undefined ? { isAiTrack: boolean(v.ai) } : {}),
+    ...(v["publish-at"] ? { publishAt: v["publish-at"] } : {}),
+    ...(v["cover-id"]
+      ? {
+          coverId: integer(v["cover-id"], "cover-id"),
+          cover: { fileId: integer(v["cover-id"], "cover-id") },
+        }
+      : {}),
+  };
+}
+const query = (v) => ({
+  ...(v.page ? { page: integer(v.page, "page") } : {}),
+  ...(v["page-size"] ? { pageSize: integer(v["page-size"], "page-size") } : {}),
+  ...(v.keyword ? { kw: v.keyword } : {}),
+  ...(v["album-id"] ? { albumId: integer(v["album-id"], "album-id") } : {}),
+});
+async function main() {
+  const { values: v, positionals: a } = parseArgs({
+    allowPositionals: true,
+    options,
+  });
+  if (v.help || !a.length) {
+    process.stdout.write(help());
+    return;
+  }
+  const profile = v.profile || "default",
+    p = paths(profile);
+  let result;
+  const config = await readJson(p.config, {
+    retry_count: 3,
+    timeout_ms: 30000,
+  });
+  const print = (r) => {
+    if (!v.quiet)
+      console.log(JSON.stringify(redact(r), null, v.compact ? 0 : 2));
+  };
+  if (a[0] === "auth") {
+    if (a[1] === "login") result = await auth.login(profile);
+    else if (a[1] === "capture")
+      result = await auth.capture(profile, v["space-id"]);
+    else if (a[1] === "status") result = await auth.status(profile);
+    else throw new Error("auth 支持 login/capture/status");
+  } else if (a[0] === "commands" && a[1] === "list") result = { commands };
+  else if (a[0] === "completion") {
+    const names = [
+      "auth",
+      "doctor",
+      "albums",
+      "works",
+      "scheduled",
+      "upload",
+      "publish",
+      "batch",
+      "jobs",
+      "config",
+      "commands",
+      "completion",
+    ];
+    const shell = a[1];
+    if (shell === "bash")
+      process.stdout.write(`complete -W '${names.join(" ")}' xmly\n`);
+    else if (shell === "zsh")
+      process.stdout.write(
+        `#compdef xmly\ncompdef '_arguments "1:command:(${names.join(" ")})"' xmly\n`,
+      );
+    else if (shell === "fish")
+      process.stdout.write(`complete -c xmly -f -a '${names.join(" ")}'\n`);
+    else throw new Error("completion 支持 bash/zsh/fish");
+    return;
+  } else if (a[0] === "config") {
+    if (a[1] === "list") result = config;
+    else if (a[1] === "get") result = { key: a[2], value: config[a[2]] };
+    else if (a[1] === "set") {
+      if (!["retry_count", "timeout_ms"].includes(a[2]))
+        throw new Error("配置键支持 retry_count/timeout_ms");
+      const value = Number(a[3]);
+      if (
+        !Number.isSafeInteger(value) ||
+        value < (a[2] === "retry_count" ? 0 : 1000) ||
+        value > (a[2] === "retry_count" ? 10 : 600000)
+      )
+        throw new Error("配置值不在允许范围");
+      config[a[2]] = value;
+      await saveJson(p.config, config);
+      result = config;
+    } else throw new Error("config 支持 list/get/set");
+  } else if (a[0] === "jobs" && a[1] === "list")
+    result = await readJson(p.jobs, { jobs: {} });
+  else if (a[0] === "publish") {
+    const item = {
+      file: "audio." + (v["file-ext"] || "mp3"),
+      albumId: integer(v["album-id"], "album-id"),
+      ...(await settings(v)),
+    };
+    if (!item.title) throw new Error("发布已上传文件需要 --title");
+    const uploaded = {
+      uploadId: integer(v["upload-id"], "upload-id"),
+      fileExtName: v["file-ext"] || "mp3",
+    };
+    const body = works.publishBody(item, uploaded);
+    if (v["dry-run"]) result = { ok: true, dryRun: true, body };
+    else {
+      const client = await Client.from(p.auth);
+      const perm = await works.permission(client);
+      const browser = new BrowserSession({
+        profile,
+        uid: perm.data.currentUid,
+        ...(v["space-id"]
+          ? { spaceId: integer(v["space-id"], "space-id") }
+          : {}),
+      });
+      await browser.open();
+      try {
+        const id = createHash("sha256")
+          .update(JSON.stringify({ operation: "publish", body }))
+          .digest("hex");
+        result = await runBatch([{ id, body }], {
+          journal: p.jobs,
+          retryFailed: !!v["retry-failed"],
+          execute: () => browser.publish(body),
+        });
+      } finally {
+        await browser.close();
+      }
+    }
+  } else if (a[0] === "batch" || a[0] === "upload") {
+    let items;
+    if (a[0] === "batch") {
+      if (!v.manifest) throw new Error("需要 --manifest");
+      items = await loadManifest(resolve(v.manifest));
+    } else {
+      if (!v.file) throw new Error("需要 --file");
+      const file = resolve(v.file);
+      const { stat } = await import("node:fs/promises");
+      const info = await stat(file);
+      if (!info.isFile() || !info.size) throw new Error("无效音频文件");
+      items = [
+        {
+          file,
+          ...(v["album-id"]
+            ? { albumId: integer(v["album-id"], "album-id") }
+            : {}),
+          ...(await settings(v)),
+        },
+      ];
+    }
+    for (const item of items) {
+      if (
+        !/\.(aiff|aif|mp3|wma|wav|flac|ogg|mp2|aac|amr|m4a)$/i.test(item.file)
+      )
+        throw new Error("不支持的音频格式：" + item.file);
+      const { stat } = await import("node:fs/promises");
+      if ((await stat(item.file)).size > 1073741824)
+        throw new Error("音频不能超过 1 GiB");
+      if (v.publish) works.publishBody(item);
+      // 发布和仅上传是不同任务；避免一次仅上传记录误跳过之后的发布。
+      const { createReadStream } = await import("node:fs");
+      const hash = createHash("sha256").update(
+        JSON.stringify({ item, mode: v.publish ? "publish" : "upload" }),
+      );
+      for await (const chunk of createReadStream(item.file)) hash.update(chunk);
+      item.id = hash.digest("hex");
+    }
+    if (v["dry-run"]) {
+      result = {
+        ok: true,
+        dryRun: true,
+        mode: v.publish ? "publish" : "upload",
+        items: items.map((item) => ({
+          ...item,
+          ...(v.publish ? { body: works.publishBody(item) } : {}),
+        })),
+      };
+    } else {
+      const client = await Client.from(p.auth);
+      const perm = await works.permission(client);
+      if (!perm.data?.uploadSoundPermission)
+        throw new Error("当前账号没有音频上传权限");
+      const browser = new BrowserSession({
+        profile,
+        uid: perm.data.currentUid,
+        ...(v["space-id"]
+          ? { spaceId: integer(v["space-id"], "space-id") }
+          : {}),
+      });
+      await browser.open();
+      try {
+        result = await runBatch(items, {
+          journal: p.jobs,
+          retryFailed: !!v["retry-failed"],
+          execute: async (item) => {
+            const uploaded = await browser.upload(item.file, {
+              timeout: v["timeout-ms"]
+                ? integer(v["timeout-ms"], "timeout-ms")
+                : 600000,
+            });
+            if (!v.publish) return uploaded;
+            const body = works.publishBody(item, uploaded);
+            return { ...(await browser.publish(body)), uploaded };
+          },
+        });
+      } finally {
+        await browser.close();
+      }
+    }
+  } else {
+    const client = await Client.from(p.auth, {
+      retries: config.retry_count,
+      timeout: config.timeout_ms,
+    });
+    const id = () => integer(v.id, "--id");
+    if (a[0] === "doctor") {
+      const status = await auth.status(profile),
+        perm = await works.permission(client);
+      result = {
+        ok: true,
+        auth: status,
+        account: { uid: perm.data.currentUid, nickname: perm.data.nickName },
+        permissions: {
+          audio: perm.data.uploadSoundPermission,
+          video: perm.data.uploadVideoPermission,
+          scheduled: perm.data.allowDelayPublish,
+          needUploadCaptcha: perm.data.needUploadCaptcha,
+        },
+      };
+    } else if (a[0] === "albums" && a[1] === "list")
+      result = await works.albums(client, query(v));
+    else if (a[0] === "albums" && a[1] === "create")
+      result = await works.createAlbum(
+        client,
+        {
+          title: v.title,
+          subtitle: v.subtitle,
+          categoryId: integer(v["category-id"], "category-id"),
+          coverPath: v["cover-path"],
+          isAiCover: boolean(v["cover-ai"]),
+          ...(v.visibility ? { visibility: v.visibility } : {}),
+          ...(await settings(v)),
+        },
+        { dryRun: !!v["dry-run"] },
+      );
+    else if (a[0] === "albums" && a[1] === "info")
+      result = await works.albumInfo(client, id());
+    else if (a[0] === "albums" && a[1] === "tracks")
+      result = await works.albumTracks(client, id(), query(v));
+    else if (a[0] === "works" && a[1] === "list")
+      result = await works.tracks(client, query(v));
+    else if (a[0] === "works" && a[1] === "info")
+      result = await works.trackInfo(client, id());
+    else if (a[0] === "scheduled" && a[1] === "list")
+      result = await works.scheduled(client, query(v));
+    else if (a[0] === "works" && a[1] === "update") {
+      const changes = await settings(v);
+      if (changes.publishAt) throw new Error("--publish-at 仅用于新作品发布");
+      if (!Object.keys(changes).length) throw new Error("请提供至少一个设置项");
+      result = await works.updateTrack(client, id(), changes, {
+        dryRun: !!v["dry-run"],
+      });
+    } else if (a[0] === "works" && a[1] === "batch-update") {
+      const manifest = await readJson(resolve(v.manifest || ""));
+      if (!Array.isArray(manifest.items) || !manifest.items.length)
+        throw new Error("需要非空 items 数组");
+      const items = manifest.items.map((x) => {
+        const item = { ...manifest.defaults, ...x };
+        integer(item.trackId, "trackId");
+        item.id = createHash("sha256")
+          .update(JSON.stringify(item))
+          .digest("hex");
+        return item;
+      });
+      // 在任何写入之前读取并组装全部编辑请求。
+      const prepared = await Promise.all(
+        items.map(async (item) => ({
+          ...item,
+          body: await works.prepareUpdate(client, item.trackId, item),
+        })),
+      );
+      if (v["dry-run"]) result = { ok: true, dryRun: true, items: prepared };
+      else
+        result = await runBatch(prepared, {
+          journal: p.jobs,
+          retryFailed: !!v["retry-failed"],
+          execute: (item) =>
+            client.request(works.API + "/reform-upload/anchorTrack/update", {
+              method: "POST",
+              body: item.body,
+            }),
+        });
+    } else throw new Error("未知命令，使用 xmly --help 查看");
+  }
+  print(result);
+  if (result?.ok === false) process.exitCode = 1;
+}
+main().catch((e) => {
+  console.error(
+    JSON.stringify({
+      ok: false,
+      error:
+        e.code === "ENOENT"
+          ? `文件不存在：${e.path || "指定路径"}${e.path?.endsWith("auth.json") ? "；请运行 xmly auth login 后捕获凭据" : ""}`
+          : e.message,
+    }),
+  );
+  process.exitCode = 1;
+});

@@ -1,0 +1,12 @@
+{
+  "defaults": {
+    "albumId": 123456,
+    "isAiTrack": false,
+    "visibility": "public",
+    "intro": "节目简介"
+  },
+  "items": [
+    { "file": "./audio/001.mp3", "title": "第一集" },
+    { "file": "./audio/002.mp3", "title": "第二集", "publishAt": "2027-01-01T20:00:00+08:00" }
+  ]
+}
