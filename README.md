@@ -6,20 +6,30 @@
 
 ## 安装与登录
 
-需要 Node.js 22+。首次扫码登录和初始化设备登记需要本机安装并运行 Ego Lite，且 `ego-browser` 在 PATH 中。完成 `auth capture` 后，日常上传和发布不再要求浏览器运行。无需额外 npm 依赖。
+需要 Node.js 22+ 和本机安装的 Google Chrome。首次扫码登录和初始化设备登记直接使用系统 Chrome，不需要 Ego Lite、扩展或额外 npm 依赖。登录完成后，日常查询、上传、发布及素材获取不再要求浏览器运行。
 
 ```bash
 npm link
 xmly --help
 xmly auth login
-# 使用喜马拉雅 APP 扫码，完成后：
-xmly auth capture
+# 在弹出的 Chrome 窗口中使用喜马拉雅 APP 扫码。
+# CLI 会自动保存登录 Cookie 和设备登记，并关闭专用登录窗口。
 xmly doctor
 ```
 
-`auth capture` 会同时保存 Cookies、真实设备登记及环境快照。此前版本已有 Cookies 的账号可运行 `auth capture-signer --space-id N`，在已登录的上传页初始化设备登记。
+Chrome 使用 `~/.ximalaya-cli/profiles/default/chrome/` 中的独立配置目录，不读取日常 Chrome 的账号、Cookie 或标签页。已保存的专用浏览器会话仍有效时，再次运行 `auth login` 可以直接验证并保存，无需再次扫码。每个 `--profile` 独立。
 
-`auth login` 返回浏览器空间 ID 和登录页截图路径。看不到浏览器窗口时，可打开截图扫码；二维码过期则回到登录页刷新。已有登录凭据时直接运行 `xmly doctor` 检查。
+默认等待登录5分钟，可用 `--timeout-ms 600000` 调整。需要先打开窗口、稍后保存时：
+
+```bash
+xmly auth login --no-wait
+# 在 Chrome 中完成登录后：
+xmly auth capture
+```
+
+`auth capture` 会同时保存 Cookies、真实设备登记及环境快照，并通过只读接口核对账号一致性。超时或核对失败不会覆盖已有凭据，Chrome 窗口会保留，完成登录后可再次捕获。登录过期时重新运行 `xmly auth login`；只需刷新设备登记时，在专用窗口仍打开的情况下使用 `xmly auth capture-signer`。
+
+macOS 自动查找 `/Applications/Google Chrome.app`，Windows/Linux 也支持标准安装路径。可用 `xmly auth login --chrome-path '/可执行文件路径'` 或环境变量 `XMLY_CHROME_PATH` 指定 Chrome。二维码过期时在浏览器中刷新；已有凭据时直接运行 `xmly doctor` 检查。
 
 凭据保存在 `~/.ximalaya-cli/profiles/default/auth.json`，文件权限为 `0600`。配置、任务记录也在 `~/.ximalaya-cli/`；可通过 `XMLY_HOME` 修改根目录，或用 `--profile NAME` 隔离账号记录。设备登记保存在同目录的 `signer.json`，权限同样为 `0600`。这些状态需要来自同一个账号；不会保存或重放旧的会话签名。
 
@@ -27,7 +37,7 @@ xmly doctor
 
 ```bash
 npm pack
-npm install -g ./ximalaya-studio-cli-0.3.0.tgz
+npm install -g ./ximalaya-studio-cli-0.4.0.tgz
 # 或从本地目录临时运行
 npx --package . xmly --help
 ```
@@ -211,7 +221,9 @@ xmly upload --file ./episode.mp3 --transport browser
 
 默认 `--transport native`，不会在失败时偷偷切换到浏览器。`signer check` 会向官网使用的会话服务发起一次加密上报，取得新会话 ID；`sessionSource: report-service` 表示正常服务响应。只有实际网络失败时，才按 SDK 定义生成网络错误会话，并明确输出 `sessionSource: sdk-network-error`。
 
-设备指纹采集仍由首次登录的真实网页完成；本项目复用这份登记，而没有实现从零模拟浏览器环境。会话服务返回更新后的设备标识时，会保存在 `signer.json`。更换账号或设备、登录状态过期时需重新捕获状态。`--transport browser` 是可选的显式兼容模式，不是默认依赖。
+设备指纹采集仍由首次登录的真实 Chrome 网页完成；本项目复用这份登记，而没有实现从零模拟浏览器环境。会话服务返回更新后的设备标识时，会保存在 `signer.json`。更换账号或设备、登录状态过期时需重新运行 `xmly auth login`。
+
+`--transport browser`、`signer compare --space-id N` 和显式传入 `--space-id` 的旧凭据捕获仍是 Ego Lite 兼容模式，仅使用这些旧命令才需要 Ego Lite 及其已登录会话；默认 Chrome 登录及纯 Node 功能均不依赖它。
 
 ## 验证范围
 

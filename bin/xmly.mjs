@@ -81,6 +81,7 @@ const strings = [
   "max-pages",
   "duration",
   "output",
+  "chrome-path",
 ];
 const bools = [
   "help",
@@ -90,6 +91,7 @@ const bools = [
   "compact",
   "quiet",
   "offline",
+  "no-wait",
 ];
 const options = Object.fromEntries([
   ...strings.map((x) => [x, { type: "string" }]),
@@ -101,10 +103,11 @@ function help() {
 
 用法：xmly <命令> [选项]
 
-  auth login                         打开浏览器扫码登录
-  auth capture [--space-id N]         登录后保存凭据
+  auth login [--chrome-path 路径]     打开系统 Chrome，扫码后自动保存凭据
+  auth login --no-wait                打开 Chrome 后返回，稍后手动捕获
+  auth capture                       从 CLI 专用 Chrome 保存登录状态
   auth status                        查看本地凭据摘要
-  auth capture-signer --space-id N    为旧登录初始化纯本地签名状态
+  auth capture-signer                 从 CLI 专用 Chrome 刷新签名设备登记
   signer status|check|compare         签名状态、无浏览器检查、原厂对照
   doctor                             只读检查登录与上传权限
   albums list [--keyword 文本]        专辑列表
@@ -203,13 +206,19 @@ async function main() {
     const { runMusicCommand } = await import("../lib/music-cli.mjs");
     result = await runMusicCommand(a, v, p, config);
   } else if (a[0] === "auth") {
-    if (a[1] === "login") result = await auth.login(profile);
+    const authOptions = {
+      ...(v["timeout-ms"] ? { timeoutMs: integer(v["timeout-ms"], "timeout-ms") } : {}),
+      onProgress: (message) => { if (!v.quiet) console.error(message); },
+    };
+    if (a[1] === "login") result = await auth.login(profile, {
+      ...authOptions, chromePath: v["chrome-path"], noWait: !!v["no-wait"],
+    });
     else if (a[1] === "capture")
-      result = await auth.capture(profile, v["space-id"]);
+      result = await auth.capture(profile, v["space-id"], authOptions);
     else if (a[1] === "capture-signer")
-      result = await auth.captureSigner(profile, v["space-id"]);
+      result = await auth.captureSigner(profile, v["space-id"], authOptions);
     else if (a[1] === "status") result = await auth.status(profile);
-    else throw new Error("auth 支持 login/capture/status");
+    else throw new Error("auth 支持 login/capture/status/capture-signer");
   } else if (a[0] === "signer") {
     const signer = await NativeSigner.fromProfile(profile);
     if (a[1] === "status") result = signer.status();

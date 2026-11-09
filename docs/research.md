@@ -111,3 +111,20 @@ REA Evidence 父记录：`ev_1a33a3b8775281dddd97c7372b560fb1e8d404ab9bc13a5451a
 只读复查确认：专辑 isPublic=false，作品 isPublic=false、visibleCrowdType=1、duration=3、transCodeState=2。作品仍处于平台处理状态（trackStatus=0），该状态不影响已经完成的请求协议及私密属性验证。没有重复提交该测试作品，也未改动或重传审核未通过的原首章。
 
 成功下载已发布测试作品的预览音频，文件为 26,375 字节；本地 ffprobe 确认为 AAC、44.1 kHz、双声道、3.000 秒。预览文件及其 SHA-256 保存在用户目录的 native-validation.json 记录中，未提交到仓库。
+
+## 0.4.0：本机 Chrome 登录
+
+2026-11-09 已将默认登录从 Ego Lite 改为系统安装的 Google Chrome。使用独立 `profiles/<profile>/chrome/` 配置目录，调试接口仅绑定 127.0.0.1 随机端口，不访问日常 Chrome 的配置目录、账号或标签页。Chrome 136 起远程调试要求非默认用户目录，见 [Chrome 官方说明](https://developer.chrome.com/blog/remote-debugging-port)。连接使用 Node 内置 WebSocket，无额外 npm 依赖或浏览器下载。
+
+流程：启动官方上传页 → 用户在官方登录页扫码/完成验证 → 真实上传页 SDK 就绪 → 捕获该页真实设备登记及喜马拉雅域 Cookie → Node 只读校验 Cookie 与登记账号一致 → 以 0600 权限保存 → 关闭 CLI 专用 Chrome。保存前出现超时、信息不完整或账号校验失败时，保留原凭据与窗口；`auth capture` 可继续完成保存。
+
+`auth login` 默认等待5分钟并自动保存；`--no-wait` 只打开窗口，用户完成扫码后再执行 `auth capture`。浏览器配置目录保留会话，后续登录若仍有效可自动保存。旧的 `--space-id` 捕获、`signer compare` 与 `--transport browser` 保留为显式 Ego 兼容模式，不是默认流程。
+
+真实验证：
+
+1. 使用 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` 打开独立窗口，确认实际进入 `passport.ximalaya.com` 登录页。
+2. 用户手动扫码后，`auth capture` 捕获 Cookie 和设备登记，通过只读权限接口验证，再自动关闭该专用 Chrome。
+3. 随后执行纯 Node `signer check` 返回 `officialRuntimeLoaded:false,sessionSource:report-service`，并成功执行素材库搜索。
+4. 再执行默认 `auth login --timeout-ms 30000`，复用专用 Chrome 的有效会话，约4秒内自动完成保存和关闭，不需再次扫码。
+
+未重新发布、上传或修改任何作品。自动测试覆盖默认等待与 no-wait 分支、Chrome 路径发现、本机端点限制、CDP乱序/断连/超时、官方标签选择、保存权限、凭据脱敏、超时保留原凭据、账号一致性及单独刷新登记。macOS 安装路径与完整登录已实测；Windows/Linux 仅实现路径发现，尚未实机验证。
