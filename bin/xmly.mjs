@@ -18,6 +18,14 @@ const commands = [
   "signer status",
   "signer check",
   "signer compare",
+  "music categories",
+  "music search",
+  "music get",
+  "music obtain",
+  "music library list",
+  "music library search",
+  "music library import",
+  "music library tag",
   "doctor",
   "albums list",
   "albums create",
@@ -67,6 +75,12 @@ const strings = [
   "resolution",
   "track-id",
   "transport",
+  "kind",
+  "min-duration",
+  "max-duration",
+  "max-pages",
+  "duration",
+  "output",
 ];
 const bools = [
   "help",
@@ -75,6 +89,7 @@ const bools = [
   "retry-failed",
   "compact",
   "quiet",
+  "offline",
 ];
 const options = Object.fromEntries([
   ...strings.map((x) => [x, { type: "string" }]),
@@ -102,6 +117,11 @@ function help() {
   works update --id ID [设置]         修改作品，支持 --dry-run
   works batch-update --manifest 文件  批量修改作品，支持 --dry-run
   scheduled list                     定时发布列表
+  music categories --kind 类型       配乐/音效分类
+  music search --keyword 关键词 [--kind 类型]   在线搜索音频素材
+  music get --id ID [--kind 类型] [--output 文件]   获取素材，优先复用已有文件
+  music obtain --keyword 描述 [--kind 类型]      本地匹配优先，无匹配再搜索下载
+  music library list|search|import|tag            管理本地可复用音频库
   upload --file 音频                  仅传输文件，返回 uploadId
   upload --file 音频 --publish --album-id ID --ai false [设置]
   publish --upload-id ID --file-ext mp3 --title 标题 --album-id ID --ai true|false
@@ -116,6 +136,8 @@ function help() {
       --visibility public|private|friends --ai true|false
       --publish-at ISO时间 --cover-id 上传后的封面ID
 通用：--profile default --page 1 --page-size 20 --compact --quiet
+素材：--kind music|intro|sfx|transition --min-duration 秒 --max-duration 秒
+      --offline（仅复用本地）--output 文件（导出且不覆盖已有文件）
 批量任务通过文件内容指纹跳过已完成项。结果不确定时停止自动重传。
 上传与发布默认使用纯 Node 协议；--transport browser 显式使用旧浏览器实现。
 `;
@@ -177,7 +199,10 @@ async function main() {
     if (!v.quiet)
       console.log(JSON.stringify(redact(r), null, v.compact ? 0 : 2));
   };
-  if (a[0] === "auth") {
+  if (a[0] === "music") {
+    const { runMusicCommand } = await import("../lib/music-cli.mjs");
+    result = await runMusicCommand(a, v, p, config);
+  } else if (a[0] === "auth") {
     if (a[1] === "login") result = await auth.login(profile);
     else if (a[1] === "capture")
       result = await auth.capture(profile, v["space-id"]);
@@ -211,6 +236,7 @@ async function main() {
       "commands",
       "completion",
       "signer",
+      "music",
     ];
     const shell = a[1];
     if (shell === "bash")

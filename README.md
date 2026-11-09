@@ -1,6 +1,6 @@
 # 喜马拉雅创作中心 CLI
 
-`xmly` 将喜马拉雅创作中心的专辑、作品、文件上传和发布流程封装为命令。支持 JSON 批量清单、任务记录、失败恢复和修改前预览。
+`xmly` 将喜马拉雅创作中心的专辑、作品、文件上传、发布及素材库封装为命令。支持 JSON 批量清单、任务记录、失败恢复和修改前预览，以及配乐/音效搜索、下载和本地复用。
 
 当前实现面向音频。日常查询、上传、发布及编辑均可使用纯 Node.js 运行，默认不启动浏览器，也不加载官网 SDK。文件上传实现了分片 HMAC 协议；发布使用本地设备 ID 算法和会话上报协议生成 `xm-sign`。
 
@@ -27,10 +27,60 @@ xmly doctor
 
 ```bash
 npm pack
-npm install -g ./ximalaya-studio-cli-0.2.0.tgz
+npm install -g ./ximalaya-studio-cli-0.3.0.tgz
 # 或从本地目录临时运行
 npx --package . xmly --help
 ```
+
+## 配乐与音效：先复用，再获取
+
+素材库的搜索、权限检查和下载均为纯 Node HTTP，不需要浏览器或 `xm-sign`；首次在线获取需要现有登录 Cookie。本地命中后，即使登录过期或断网也可继续使用。
+
+日常优先使用 `obtain`，先匹配完整的本地音频，没有合适的才联网搜索并下载：
+
+```bash
+# 搜索/获取10到20秒的雨声音效；以后“下雨”也能命中已有的雨声
+xmly music obtain --kind sfx --keyword 雨声 --min-duration 10 --max-duration 20
+xmly music obtain --kind sfx --keyword 下雨 --min-duration 10 --max-duration 20
+
+# 配乐，输出到指定位置。音频同时入库供以后复用；不覆盖已有输出文件
+xmly music obtain --kind music --keyword '悬疑' --output ./assets/suspense.m4a
+
+# 完全离线：没有匹配则返回 no-local-match，不会联网
+xmly music obtain --kind sfx --keyword 雨声 --offline
+```
+
+`--kind` 支持 `music` 配乐（默认）、`intro` 片头片尾、`sfx` 音效、`transition` 转场音效。返回 JSON 包括 `source: local|remote`、`reused`、素材 ID、标题、秒数、SHA256、字节数及文件绝对路径。
+
+匹配依据为标题、标签、明确同义词、类型和可选时长，适合关键词输入；多个关键词用空格分开。它不分析听感或做通用语义判断。自动搜索最多3页，可用 `--max-pages 1..20` 调整；没有足够匹配时返回 `no-confident-match` 和候选，不擅自下载无关结果。`--min-duration/--max-duration` 是本地秒数筛选，在线搜索的 `totalCount` 仍是平台原始总数。
+
+查看在线候选并手动选择：
+
+```bash
+xmly music categories --kind music
+xmly music categories --kind sfx
+xmly music search --kind music --keyword 悬疑 --page 1 --page-size 12
+xmly music search --kind sfx --keyword 雨声
+xmly music search --kind intro --keyword 悬疑
+xmly music search --kind transition --keyword 风
+xmly music get --kind sfx --id 8669
+xmly music get --kind music --id 1001316930 --output ./assets/drums.m4a
+```
+
+`music search` 明确在线搜索；加 `--offline` 则只查本地。`music get` 先按 ID 校验本地缓存，有则直接复用；音效首次按 ID 获取需要先有一条搜索记录。新下载仍遵守平台的主播认证权限检查。可用 `--category-id` 指定分类；音乐分类会交叉核对返回标签，避免宽泛搜索结果污染本地分类。
+
+管理本地素材及用途标签：
+
+```bash
+xmly music library list
+xmly music library search --keyword 雨声
+xmly music library tag --id sfx:8669 --tags '["雨声", "城市", "夜晚"]'
+xmly music library import --file ./my-rain.wav --kind sfx --title 雨夜环境 --tags '["雨声", "夜晚"]'
+```
+
+导入会复制文件入库，WAV/M4A 自动读取容器时长，其他格式可以 `--duration 秒` 补充。元数据和文件保存在 `~/.ximalaya-cli/profiles/default/audio-library/`，按 SHA256 去重，复用前校验完整性。每个 profile 独立，支持 `XMLY_HOME`；不将素材和凭据存入项目或 npm 包。
+
+已实际下载18秒雨声音效及约29.6秒悬疑配乐，并在无登录文件、禁用网络和浏览器的子进程中验证复用。协议、接口及验证边界见 [素材库研究](docs/music-protocol.md)。
 
 ## 查询专辑和作品
 
