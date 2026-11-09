@@ -1,6 +1,6 @@
 # 喜马拉雅创作中心 CLI
 
-`xmly` 将喜马拉雅创作中心的专辑、作品、文件上传、发布及素材库封装为命令。支持 JSON 批量清单、任务记录、失败恢复和修改前预览，以及配乐/音效搜索、下载和本地复用。
+`xmly` 将喜马拉雅创作中心的专辑、作品、文件上传、发布及素材库封装为命令。支持 JSON 批量清单、任务记录、失败恢复和修改前预览，以及配乐/音效和 CV 墙样音的搜索、下载和本地复用。
 
 当前实现面向音频。日常查询、上传、发布及编辑均可使用纯 Node.js 运行，默认不启动浏览器，也不加载官网 SDK。文件上传实现了分片 HMAC 协议；发布使用本地设备 ID 算法和会话上报协议生成 `xm-sign`。
 
@@ -62,7 +62,23 @@ xmly music obtain --kind sfx --keyword 雨声 --offline
 
 `--kind` 支持 `music` 配乐（默认）、`intro` 片头片尾、`sfx` 音效、`transition` 转场音效。返回 JSON 包括 `source: local|remote`、`reused`、素材 ID、标题、秒数、SHA256、字节数及文件绝对路径。
 
-匹配依据为标题、标签、明确同义词、类型和可选时长，适合关键词输入；多个关键词用空格分开。它不分析听感或做通用语义判断。自动搜索最多3页，可用 `--max-pages 1..20` 调整；没有足够匹配时返回 `no-confident-match` 和候选，不擅自下载无关结果。`--min-duration/--max-duration` 是本地秒数筛选，在线搜索的 `totalCount` 仍是平台原始总数。
+匹配依据为标题、标签、明确同义词、类型和可选时长，适合关键词输入；多个关键词用空格分开。它不分析听感或做通用语义判断。没有足够匹配时返回 `no-confident-match` 和候选，不擅自下载无关结果。`--min-duration/--max-duration` 是本地秒数筛选，在线搜索的 `totalCount` 仍是平台原始总数。
+
+`obtain` 默认按以下顺序获取完整音频：本地完整文件 → 音剪素材包（AI及创作中心两个来源）→ 原创作中心素材库。素材包搜索优先检查包名/描述相关及已导入的包，最终必须由包内条目的标题或描述匹配关键词；包名本身不足以触发导入。命中后先复用已有云端分组，必要时只导入选中的一条，再获取完整音频。它可能在音剪云端新建分组并写入该条素材；不会整包导入或自动购买。
+
+```bash
+# 同一命令自动搜索素材包并下载完整音频，之后相同/相近关键词直接复用本地
+xmly music obtain --kind music --keyword 尬趣松弛鲜活
+xmly music obtain --kind music --keyword 尬趣松弛鲜活 --offline
+
+# 限定在线来源；本地匹配始终优先
+xmly music obtain --kind music --keyword 古风 --source materials --library ai --max-packs 20
+xmly music obtain --kind sfx --keyword 雨声 --source studio
+```
+
+`--source auto|materials|studio` 默认为 `auto`。`materials` 仅查音剪素材包；`studio` 沿用原在线素材库。`--library ai|xmly` 限定素材包来源，不传则都查；制作组素材包可加 `--team-id`。默认最多检查10个可访问的非空包，可用 `--max-packs 1..100` 调整；到达上限而未命中时，结果标注 `searchLimited`。原创作中心搜索及云端同名音频核对最多3页，可用 `--max-pages 1..20` 调整。素材包仅支持 `music/sfx`，`intro/transition` 或带 `--category-id` 的自动请求沿用原素材库；显式 `--source materials` 不支持这些条件。
+
+试听缓存不参与 `obtain`。带时长限制时，素材包条目必须有已知时长且符合条件；未知时长不会为验证用途而自动导入。云端同名条目或分组有歧义、导入结果不确定、类型/时长不一致时停止并返回具体状态，不猜测映射、不继续自动获取。已购买的付费包及有权限的制作组会员包可由平台验证后导入，未购买的包会跳过。导入任务沿用 `materials import` 的任务记录与恢复方式。
 
 查看在线候选并手动选择：
 
@@ -91,6 +107,75 @@ xmly music library import --file ./my-rain.wav --kind sfx --title 雨夜环境 -
 导入会复制文件入库，WAV/M4A 自动读取容器时长，其他格式可以 `--duration 秒` 补充。元数据和文件保存在 `~/.ximalaya-cli/profiles/default/audio-library/`，按 SHA256 去重，复用前校验完整性。每个 profile 独立，支持 `XMLY_HOME`；不将素材和凭据存入项目或 npm 包。
 
 已实际下载18秒雨声音效及约29.6秒悬疑配乐，并在无登录文件、禁用网络和浏览器的子进程中验证复用。协议、接口及验证边界见 [素材库研究](docs/music-protocol.md)。
+
+## 音剪素材库：品类包、试听、云端导入与完整音频
+
+[音剪素材库](https://aigc.ximalaya.com/ai-materials) 以品类包组织音乐和音效，与前面的创作中心 `music` 搜索入口不同。新增 `materials` 命令组，沿用当前 profile 的登录凭据，全程使用纯 Node HTTP。
+
+```bash
+# 查找 AI 音乐包；library 可选 ai/xmly，kind 可选 music/sfx
+xmly materials list --library ai --kind music --keyword 古风
+xmly materials list --library xmly --kind sfx --access free
+# access 可选 all/free/limited/member/paid；筛选包名和描述
+xmly materials info --pack-id music-0819-43
+xmly materials items --pack-id music-0819-43 --keyword 钢琴 --page 1 --page-size 20
+
+# 保存网页试听音频，可用 --offline 复用缓存
+xmly materials preview --pack-id music-0819-43 --id xmly-656290 --output ./preview.mp3
+
+# 查看导入请求，再将整包导入音剪云端库
+xmly materials import --pack-id xmly-music-儿童 --dry-run
+xmly materials import --pack-id xmly-music-儿童
+
+# 查找导入后的云端素材，按 trackId 下载完整音频
+xmly materials library groups --kind music
+xmly materials library list --group-id 446024 --keyword 吉他
+xmly materials library get --id 19687692 --output ./guitar.mp3
+xmly materials library get --id 19687692 --offline
+```
+
+`import` 会在音剪云端创建同名分组，并按官网协议每批导入5条；它不将整包下载到本机。默认使用个人库，制作组库在查询、导入或下载时加 `--team-id 制作组ID`。会员/付费包要求制作组账号及平台权限；尚未购买的付费包需先在网页完成购买，CLI 不自动购买。
+
+任务记录复用 `jobs.json`：重复执行同一包会跳过已完成批次；云端已导入但没有本地任务记录时返回 `already-imported`，避免重建分组。网络中断或响应异常记为 `uncertain` 并停止，不自动重发。先通过云端分组和 `xmly jobs list` 核对，确认该请求未成功后，用 `xmly jobs resolve --id 任务指纹 --resolution retry`，再执行原导入命令并加 `--retry-failed`。准备请求会创建分组，请核对后再允许重试；不要把素材导入任务通过 `jobs resolve --resolution done` 标记完成，该命令不能补回导入计数。部分条目失败会返回 `partial` 和失败原因，不自动重导整个批次。
+
+`preview` 明确标记为试听，缓存类型为 `preview`，不作为正式配乐自动匹配。`materials library get` 获取账号云端库里的完整音频，按个人/制作组命名空间入库；返回的 `trackId` 是下一次下载使用的数字 ID。完整音频类型为 `music` 或 `sfx`，后续可用现有 `xmly music obtain`、`music library search/tag` 复用。`--output` 不覆盖已有文件。
+
+已实际验证两种来源及音乐/音效列表、包内搜索、试听下载，以及免费「[XM]儿童」包16/16首云端导入；重复导入未新建分组。验证产生的个人分组为446024，「吉他童趣小曲」云端音频 ID 为19687692，完整下载2,348,614字节、时长107.781秒。其他账号需使用自己的分组和音频 ID。详见 [音剪素材包协议](docs/materials-protocol.md)。
+
+## CV 墙：搜索主播与下载样音
+
+复用 `xmly auth login` 保存的登录凭据，使用纯 Node HTTP 查询 [CV 墙](https://aigc.ximalaya.com/cv-market-store)，无需浏览器或额外签名。
+
+```bash
+xmly cv search --keyword 古言 --page 1 --page-size 20
+xmly cv search --keyword 寒酥酥hs
+xmly cv samples --id 490
+# 主播 ID 也可以写为 cv-490；样音 ID 来自搜索或 samples 输出
+xmly cv get --cv-id 490 --id 1295
+xmly cv get --cv-id 490 --id 1295 --output ./samples/guyan.mp3
+xmly cv get --cv-id 490 --id 1295 --offline
+# 按关键词获取：先查本地样音，无匹配再联网；可限定主播
+xmly cv obtain --keyword 古言 --cv-id 490
+xmly cv obtain --keyword 寒酥酥hs --offline
+# 默认搜索/查看样音也优先本地，显式刷新可查看完整在线列表
+xmly cv search --keyword 古言 --refresh
+xmly cv samples --id 490 --refresh
+```
+
+`search` 默认先查本地已下载且哈希校验通过的样音及已保存的主播元数据，支持主播名、描述和样音标题关键词；本地无匹配才联网。`samples` 同样先返回该主播已有的完整本地样音。本地结果标记 `source:local,cachedOnly:true`，只代表已下载部分。`--refresh` 跳过本地列表查询，查看最新在线完整候选；`--offline` 只查本地，不能与 `--refresh` 同用。在线搜索按平台支持的主播名称/描述进行，不检索音频正文。输出包含主播 ID、名称、描述、技能及样音 ID、标题、秒数。
+
+`obtain` 按标题、标签、主播名和可选时长条件匹配本地样音，未命中才联网搜索并下载，支持 `--cv-id` 限定主播、`--min-duration/--max-duration`、`--output` 和 `--offline`。网络候选中有多个同等匹配项时返回 `ambiguous-match`，请用 `cv get` 明确选择；不会把描述匹配当作听感判断。默认最多搜索3页；指定主播后按 ID 查找也受 `--max-pages 1..100` 限制。
+
+首次按 ID 在线查询主播会分页查找，`samples/get` 默认最多20页、每页50位主播，可用 `--max-pages 1..100` 调整；先按名字搜索可以缩小后续查找范围。`search --page-size` 支持1到100，本地搜索也遵守分页参数。
+
+`get` 先校验本地文件，未命中时重新查询样音地址，并核对主播和样音 ID。音频以 `cv:主播ID:样音ID` 入库，类型为 `voice`，不与配乐/音效混用；下载地址不写入索引或搜索记录。`--offline` 获取仅查本地，未缓存时返回 `not-cached`。`--output` 导出时不覆盖已有文件；扩展名按文件内容识别，可能与网站链接后缀不同，请参考返回的 `ext` 和 `path`。
+
+```bash
+xmly music library search --keyword 寒酥酥hs
+xmly music library tag --id cv:490:1295 --tags '["古言", "声线参考"]'
+```
+
+样音与搜索记录分别保存在当前 profile 的 `audio-library/` 和 `cv-catalog/`，均在仓库外。2026-11-09 已实际验证搜索、指定主播样音查询、下载及离线复用；抽查文件为37.536秒、1,221,125字节，内容格式为 MP3。获取范围为网页提供的试听样音，使用授权需与主播另行确认。接口与验证边界见 [CV 墙接口说明](docs/cv-protocol.md)。
 
 ## 查询专辑和作品
 

@@ -26,6 +26,18 @@ const commands = [
   "music library search",
   "music library import",
   "music library tag",
+  "cv search",
+  "cv samples",
+  "cv get",
+  "cv obtain",
+  "materials list",
+  "materials info",
+  "materials items",
+  "materials preview",
+  "materials import",
+  "materials library groups",
+  "materials library list",
+  "materials library get",
   "doctor",
   "albums list",
   "albums create",
@@ -82,6 +94,14 @@ const strings = [
   "duration",
   "output",
   "chrome-path",
+  "cv-id",
+  "pack-id",
+  "group-id",
+  "team-id",
+  "library",
+  "access",
+  "source",
+  "max-packs",
 ];
 const bools = [
   "help",
@@ -92,6 +112,7 @@ const bools = [
   "quiet",
   "offline",
   "no-wait",
+  "refresh",
 ];
 const options = Object.fromEntries([
   ...strings.map((x) => [x, { type: "string" }]),
@@ -125,6 +146,19 @@ function help() {
   music get --id ID [--kind 类型] [--output 文件]   获取素材，优先复用已有文件
   music obtain --keyword 描述 [--kind 类型]      本地匹配优先，无匹配再搜索下载
   music library list|search|import|tag            管理本地可复用音频库
+  cv search [--keyword 主播名称或描述]           搜索 CV 墙主播及样音
+  cv samples --id 主播ID                         查看指定主播的样音
+  cv get --cv-id 主播ID --id 样音ID [--output 文件]  下载样音，优先复用本地
+  cv obtain --keyword 关键词 [--cv-id 主播ID]     本地样音优先，无匹配再联网获取
+  cv search/samples --refresh                    联网查询最新列表（默认本地优先）
+  materials list [--library ai|xmly] [--kind music|sfx]  音剪素材包列表
+  materials info --pack-id 包ID                       素材包信息与访问类型
+  materials items --pack-id 包ID [--keyword 文本]      包内素材搜索与分页
+  materials preview --pack-id 包ID --id 素材ID [--output 文件]  缓存试听音频
+  materials import --pack-id 包ID [--dry-run]          导入音剪云端库，每批5条
+  materials library groups [--kind music|sfx]          查看音剪云端分组
+  materials library list [--group-id 分组ID]           搜索云端素材
+  materials library get --id 云端音频ID [--output 文件]  获取完整音频，优先复用本地
   upload --file 音频                  仅传输文件，返回 uploadId
   upload --file 音频 --publish --album-id ID --ai false [设置]
   publish --upload-id ID --file-ext mp3 --title 标题 --album-id ID --ai true|false
@@ -141,6 +175,10 @@ function help() {
 通用：--profile default --page 1 --page-size 20 --compact --quiet
 素材：--kind music|intro|sfx|transition --min-duration 秒 --max-duration 秒
       --offline（仅复用本地）--output 文件（导出且不覆盖已有文件）
+素材包：--library ai|xmly --kind music|sfx --access all|free|limited|member|paid
+        --team-id 制作组ID（省略则个人库）；import 写入云端，支持 --dry-run
+自动获取：music obtain --source auto|materials|studio --max-packs 10
+          默认先本地，再音剪素材包，再原素材库；命中包时只导入选中条目
 批量任务通过文件内容指纹跳过已完成项。结果不确定时停止自动重传。
 上传与发布默认使用纯 Node 协议；--transport browser 显式使用旧浏览器实现。
 `;
@@ -205,6 +243,12 @@ async function main() {
   if (a[0] === "music") {
     const { runMusicCommand } = await import("../lib/music-cli.mjs");
     result = await runMusicCommand(a, v, p, config);
+  } else if (a[0] === "materials") {
+    const { runMaterialsCommand } = await import("../lib/materials-cli.mjs");
+    result = await runMaterialsCommand(a, v, p, config);
+  } else if (a[0] === "cv") {
+    const { runCvCommand } = await import("../lib/cv-cli.mjs");
+    result = await runCvCommand(a, v, p, config);
   } else if (a[0] === "auth") {
     const authOptions = {
       ...(v["timeout-ms"] ? { timeoutMs: integer(v["timeout-ms"], "timeout-ms") } : {}),
@@ -246,6 +290,8 @@ async function main() {
       "completion",
       "signer",
       "music",
+      "cv",
+      "materials",
     ];
     const shell = a[1];
     if (shell === "bash")
