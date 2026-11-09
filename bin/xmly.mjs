@@ -7,12 +7,17 @@ import { paths, readJson, saveJson, redact } from "../lib/config.mjs";
 import { Client } from "../lib/client.mjs";
 import * as auth from "../lib/auth.mjs";
 import * as works from "../lib/works.mjs";
-import { BrowserSession } from "../lib/browser.mjs";
+import { createSession } from "../lib/transport.mjs";
+import { NativeSigner } from "../lib/signer.mjs";
 import { loadManifest, runBatch, resolveJob } from "../lib/batch.mjs";
 const commands = [
   "auth login",
   "auth capture",
   "auth status",
+  "auth capture-signer",
+  "signer status",
+  "signer check",
+  "signer compare",
   "doctor",
   "albums list",
   "albums create",
@@ -61,6 +66,7 @@ const strings = [
   "subtitle",
   "resolution",
   "track-id",
+  "transport",
 ];
 const bools = [
   "help",
@@ -83,6 +89,8 @@ function help() {
   auth login                         打开浏览器扫码登录
   auth capture [--space-id N]         登录后保存凭据
   auth status                        查看本地凭据摘要
+  auth capture-signer --space-id N    为旧登录初始化纯本地签名状态
+  signer status|check|compare         签名状态、无浏览器检查、原厂对照
   doctor                             只读检查登录与上传权限
   albums list [--keyword 文本]        专辑列表
   albums create --title 名称 --subtitle 卖点 --category-id 分类ID
@@ -109,7 +117,7 @@ function help() {
       --publish-at ISO时间 --cover-id 上传后的封面ID
 通用：--profile default --page 1 --page-size 20 --compact --quiet
 批量任务通过文件内容指纹跳过已完成项。结果不确定时停止自动重传。
-上传和发布签名使用 Ego Lite 中的官方网页运行时。
+上传与发布默认使用纯 Node 协议；--transport browser 显式使用旧浏览器实现。
 `;
 }
 function integer(v, name) {
@@ -173,8 +181,20 @@ async function main() {
     if (a[1] === "login") result = await auth.login(profile);
     else if (a[1] === "capture")
       result = await auth.capture(profile, v["space-id"]);
+    else if (a[1] === "capture-signer")
+      result = await auth.captureSigner(profile, v["space-id"]);
     else if (a[1] === "status") result = await auth.status(profile);
     else throw new Error("auth 支持 login/capture/status");
+  } else if (a[0] === "signer") {
+    const signer = await NativeSigner.fromProfile(profile);
+    if (a[1] === "status") result = signer.status();
+    else if (a[1] === "check") {
+      const signed = await signer.sign();
+      result = { ok: true, submitted: false, ...signed.meta };
+    } else if (a[1] === "compare") {
+      const { compareSigner } = await import("../lib/signer-oracle.mjs");
+      result = await compareSigner(signer, v["space-id"]);
+    } else throw new Error("signer 支持 status/check/compare");
   } else if (a[0] === "commands" && a[1] === "list") result = { commands };
   else if (a[0] === "completion") {
     const names = [
@@ -190,6 +210,7 @@ async function main() {
       "config",
       "commands",
       "completion",
+      "signer",
     ];
     const shell = a[1];
     if (shell === "bash")
@@ -237,14 +258,16 @@ async function main() {
     else {
       const client = await Client.from(p.auth);
       const perm = await works.permission(client);
-      const browser = new BrowserSession({
+      const session = await createSession({
+        client,
+        transport: v.transport || "native",
+        publish: a[0] === "publish" || !!v.publish,
         profile,
         uid: perm.data.currentUid,
         ...(v["space-id"]
           ? { spaceId: integer(v["space-id"], "space-id") }
           : {}),
       });
-      await browser.open();
       try {
         const id = createHash("sha256")
           .update(JSON.stringify({ operation: "publish", body }))
@@ -252,10 +275,10 @@ async function main() {
         result = await runBatch([{ id, body }], {
           journal: p.jobs,
           retryFailed: !!v["retry-failed"],
-          execute: () => browser.publish(body),
+          execute: () => session.publish(body),
         });
       } finally {
-        await browser.close();
+        await session.close();
       }
     }
   } else if (a[0] === "batch" || a[0] === "upload") {
@@ -311,31 +334,33 @@ async function main() {
       const perm = await works.permission(client);
       if (!perm.data?.uploadSoundPermission)
         throw new Error("当前账号没有音频上传权限");
-      const browser = new BrowserSession({
+      const session = await createSession({
+        client,
+        transport: v.transport || "native",
+        publish: a[0] === "publish" || !!v.publish,
         profile,
         uid: perm.data.currentUid,
         ...(v["space-id"]
           ? { spaceId: integer(v["space-id"], "space-id") }
           : {}),
       });
-      await browser.open();
       try {
         result = await runBatch(items, {
           journal: p.jobs,
           retryFailed: !!v["retry-failed"],
           execute: async (item) => {
-            const uploaded = await browser.upload(item.file, {
+            const uploaded = await session.upload(item.file, {
               timeout: v["timeout-ms"]
                 ? integer(v["timeout-ms"], "timeout-ms")
                 : 600000,
             });
             if (!v.publish) return uploaded;
             const body = works.publishBody(item, uploaded);
-            return { ...(await browser.publish(body)), uploaded };
+            return { ...(await session.publish(body)), uploaded };
           },
         });
       } finally {
-        await browser.close();
+        await session.close();
       }
     }
   } else {
@@ -351,6 +376,13 @@ async function main() {
         ok: true,
         auth: status,
         account: { uid: perm.data.currentUid, nickname: perm.data.nickName },
+        nativeSigning: status.signerReady
+          ? (
+              await NativeSigner.fromProfile(profile, {
+                uid: perm.data.currentUid,
+              })
+            ).status()
+          : { ok: false, reason: "需要初始化设备登记" },
         permissions: {
           audio: perm.data.uploadSoundPermission,
           video: perm.data.uploadVideoPermission,
@@ -432,7 +464,7 @@ main().catch((e) => {
       ok: false,
       error:
         e.code === "ENOENT"
-          ? `文件不存在：${e.path || "指定路径"}${e.path?.endsWith("auth.json") ? "；请运行 xmly auth login 后捕获凭据" : ""}`
+          ? `文件不存在：${e.path || "指定路径"}${e.path?.endsWith("auth.json") ? "；请运行 xmly auth login 后捕获凭据" : e.path?.endsWith("signer.json") ? "；请运行 xmly auth capture 初始化设备登记" : ""}`
           : e.message,
     }),
   );

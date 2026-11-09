@@ -2,11 +2,11 @@
 
 `xmly` 将喜马拉雅创作中心的专辑、作品、文件上传和发布流程封装为命令。支持 JSON 批量清单、任务记录、失败恢复和修改前预览。
 
-当前实现面向音频。查询、专辑创建和作品编辑使用 HTTP 接口；音频传输使用 Ego Lite 中官方网页的上传器，发布时实时调用网页 `_getDUH()` 生成签名。
+当前实现面向音频。日常查询、上传、发布及编辑均可使用纯 Node.js 运行，默认不启动浏览器，也不加载官网 SDK。文件上传实现了分片 HMAC 协议；发布使用本地设备 ID 算法和会话上报协议生成 `xm-sign`。
 
 ## 安装与登录
 
-需要 Node.js 22+。上传、发布和扫码登录还需要本机安装并运行 Ego Lite，且 `ego-browser` 在 PATH 中。无需额外 npm 依赖。
+需要 Node.js 22+。首次扫码登录和初始化设备登记需要本机安装并运行 Ego Lite，且 `ego-browser` 在 PATH 中。完成 `auth capture` 后，日常上传和发布不再要求浏览器运行。无需额外 npm 依赖。
 
 ```bash
 npm link
@@ -17,15 +17,17 @@ xmly auth capture
 xmly doctor
 ```
 
+`auth capture` 会同时保存 Cookies、真实设备登记及环境快照。此前版本已有 Cookies 的账号可运行 `auth capture-signer --space-id N`，在已登录的上传页初始化设备登记。
+
 `auth login` 返回浏览器空间 ID 和登录页截图路径。看不到浏览器窗口时，可打开截图扫码；二维码过期则回到登录页刷新。已有登录凭据时直接运行 `xmly doctor` 检查。
 
-凭据保存在 `~/.ximalaya-cli/profiles/default/auth.json`，文件权限为 `0600`。配置、任务记录也在 `~/.ximalaya-cli/`；可通过 `XMLY_HOME` 修改根目录，或用 `--profile NAME` 隔离账号记录。浏览器当前账号必须与所选 profile 一致。
+凭据保存在 `~/.ximalaya-cli/profiles/default/auth.json`，文件权限为 `0600`。配置、任务记录也在 `~/.ximalaya-cli/`；可通过 `XMLY_HOME` 修改根目录，或用 `--profile NAME` 隔离账号记录。设备登记保存在同目录的 `signer.json`，权限同样为 `0600`。这些状态需要来自同一个账号；不会保存或重放旧的会话签名。
 
 本项目尚未发布到 npm。也可以打包后安装：
 
 ```bash
 npm pack
-npm install -g ./ximalaya-studio-cli-0.1.0.tgz
+npm install -g ./ximalaya-studio-cli-0.2.0.tgz
 # 或从本地目录临时运行
 npx --package . xmly --help
 ```
@@ -99,7 +101,7 @@ xmly batch --manifest ./batch.json --publish
 xmly batch --manifest ./batch.json --publish --retry-failed
 ```
 
-不加 `--publish` 时只上传文件。任务按清单顺序执行，完成项通过文件内容和参数指纹跳过。恢复粒度为整个文件，当前不实现 CLI 自有的分片断点保存。官方上传器负责传输中的分片、重试和合并。
+不加 `--publish` 时只上传文件。任务按清单顺序执行，完成项通过文件内容和参数指纹跳过。恢复粒度为整个文件，当前不实现 CLI 自有的分片断点保存。默认由本地上传器负责分片、重试和合并；文件合并响应丢失时先查询合并结果，不直接重复提交。
 
 ## 修改作品
 
@@ -146,6 +148,21 @@ xmly completion zsh
 
 读取请求可对暂时故障退避重试。写入请求不自动重试；提交后断线会记为 `uncertain`，下次不会自动重传。需核对远端结果后再使用 `jobs resolve`。进程异常退出可能留下 `jobs.json.lock`；确认没有 `xmly` 批量任务运行后才可删除此锁文件。
 
+## 纯 Node 签名与浏览器兼容模式
+
+```bash
+xmly signer status       # 检查本地设备登记
+xmly signer check        # 生成新签名，仅输出来源和长度，不发布作品
+xmly signer compare --space-id N   # 显式使用已打开网页做只读原厂对照
+xmly upload --file ./episode.mp3 --transport native
+# 如需显式采用旧实现：
+xmly upload --file ./episode.mp3 --transport browser
+```
+
+默认 `--transport native`，不会在失败时偷偷切换到浏览器。`signer check` 会向官网使用的会话服务发起一次加密上报，取得新会话 ID；`sessionSource: report-service` 表示正常服务响应。只有实际网络失败时，才按 SDK 定义生成网络错误会话，并明确输出 `sessionSource: sdk-network-error`。
+
+设备指纹采集仍由首次登录的真实网页完成；本项目复用这份登记，而没有实现从零模拟浏览器环境。会话服务返回更新后的设备标识时，会保存在 `signer.json`。更换账号或设备、登录状态过期时需重新捕获状态。`--transport browser` 是可选的显式兼容模式，不是默认依赖。
+
 ## 验证范围
 
 2026-11-09 已用真实账号完成：专辑及作品查询、上传权限检查、定时列表查询、音频分片上传、新建《小兵传奇》专辑、发布首章，以及向首章提交 AI 属性编辑请求。未改动账号中原有的两张专辑和四条作品。
@@ -157,5 +174,7 @@ npm run check
 npm test
 npm run pack:dry
 ```
+
+新增纯 Node 验证：原厂设备 ID、压缩加密及网络错误会话三个只读对照全部匹配；小文件和 3 个分片的真实上传成功；清空子进程 PATH 后，双文件批量上传成功，证明该路径不调用 `ego-browser`。纯 Node 真实发布验证尚待执行。
 
 接口研究证据、实现边界和待验证项见 `docs/research.md`。

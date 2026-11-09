@@ -38,7 +38,7 @@
 3. POST `/upload/merge/mkfile`；必要时由官网 SDK 查询 `/upload/merge/status`。
 4. 成功响应 `code: "000000"`，`data.uploadId` 是随后发布使用的文件 ID。
 
-SDK 的文件签名为 `x-xfm-*` 请求头；发布签名为独立的 `xm-sign`，前端在每次发布前调用 `_getDUH()`。本项目复用真实浏览器中的官方上传器与签名函数，没有将运行时签名或上传 token 固化到代码中。
+SDK 的文件签名为 `x-xfm-*` 请求头；发布签名为独立的 `xm-sign`，前端在每次发布前调用 `_getDUH()`。初版复用真实浏览器中的官方上传器与签名函数。0.2.0 已新增默认的纯 Node 协议实现，具体证据和边界见下文。
 
 Ego Lite 未提供一个供本次 REA 直接附加的常规 HTTP CDP 端点，因此本次 REA 用于静态分析；实时上传验证由 Ego Lite API 和官网 SDK 完成。
 
@@ -63,4 +63,40 @@ Ego Lite 未提供一个供本次 REA 直接附加的常规 HTTP CDP 端点，�
 
 尚未逐项实测：真实定时发布、好友/私密可见范围切换、标签及封面替换、批量多作品实际发布、付费专辑与视频/配图/文本音频。未实现付费、作品删除、迁移专辑或平台 AI 音频生成。
 
-任务去重和恢复记录由本地维护，不等同于服务器幂等保证；不确定的写入结果必须先核对，不能直接重试。文件传输仍依赖有效的 Ego Lite 登录状态和官网 SDK；网站版本变化可能需要适配。
+任务去重和恢复记录由本地维护，不等同于服务器幂等保证；不确定的写入结果必须先核对，不能直接重试。0.1.0 的文件传输依赖 Ego Lite；0.2.0 默认改用本地实现，仍需要有效登录 Cookies 与首次设备登记。网站版本变化可能需要适配。
+
+
+## 0.2.0：浏览器外协议实现
+
+### 文件上传
+
+新增 `lib/upload.mjs` 和 `lib/upload-sign.mjs`：
+
+- 签名规范化为 `POST|bodyDigest|signedHeaders|canonicalQuery`。bodyDigest 为 JSON UTF-8 的 MD5/Base64；query 使用小写键排序和未进行 URL 编码的值。
+- `x-xfm-signature` 为 HMAC-SHA256/Base64。公有 SDK 分发的签名常量不是用户令牌；令牌由 `/clamper-token/token` 获取并仅在内存中使用。
+- 本地顺序读取 2 MiB 分片，记录服务端 multipartId/ctx，合并后返回 uploadId。代码限制块大小至少 1 MiB，遵循网页采用的配置范围。
+- 不盲目重发可能已经成功的合并请求，优先查询同一合并签名。
+- 原厂签名函数被单独提取，在隔离 VM 中固定时间做只读对照。query-only 与 JSON-body 两组结果均与 Node 实现完全一致。生产模块没有加载该函数或 VM。
+- 真实上传：264,644 字节、3 秒 WAV；另一个 5,292,044 字节、30 秒 WAV，按 2 MiB 分成 3 片，均成功。
+- 在 CLI 子进程中把 PATH 设置为不存在的目录，双文件批量上传成功，结果均含 `transport: native`。
+
+### xm-sign
+
+业务 bundle 的 `_getDUH()` 使用同一应用 key 和业务场景，拼接 `getBrowserID(...) + "&&" + getSessionID(...)`。它不接受发布正文作为输入。
+
+官网 `du_web_sdk.js` 为 186,712 字节的字符串表混淆脚本。本次仅提取字符串表解码器及旋转逻辑执行，业务逻辑按静态文本解析；没有把完整官方脚本嵌入 CLI。后续通过真实网页上的小范围只读调用对照关键函数。
+
+REA Evidence 父记录：`ev_1a33a3b8775281dddd97c7372b560fb1e8d404ab9bc13a5451a37163bf2bc924`。该轮分析遇到 1024 MiB worker 堆限制，图覆盖不完整。因此算法结论主要由解码后的原始源代码检查及实时函数对照支持，不能把该图视为完整证明。
+
+本地实现分为：
+
+1. 已登记 identity 的设备 ID：TripleDES-CBC、Base64 字符变换和校验。与当前浏览器的设备 ID 逐字节一致。
+2. 正常会话请求：JSON UTF-8 → zlib/deflate(level 6) → AES-128-ECB/PKCS7，POST 到 SDK 使用的 `hdaa.shuzilm.cn/report`，解密读取新的 sid。
+3. 实际网络错误时的 SDK 降级协议：随机字段、62 进制时间、状态位、错误码和 CRC32，再 AES-128-CBC/Base64url；末尾 `_2`。固定随机数和时间的合成样本与官网输出逐字节一致。该分支不会伪装成正常服务响应。
+4. 本次签名使用调用开始时的设备 ID；服务端若返回新的登记标识，保存供后续调用使用，与 SDK 回调更新缓存的时序一致。
+
+`xmly signer compare` 输出 `submitted:false`，设备 ID、上报加密、网络错误会话三个检查均为 true。`xmly signer check` 已在纯 Node 进程取得正常会话服务响应，`sessionSource: report-service`，没有执行官方 SDK 或浏览器。
+
+当前设备登记与环境快照在首次登录时采集，和 Cookies 一起保存在仓库外。此实现没有重新制造一套虚拟浏览器指纹，也不声称能绕过登录或平台验证码。独立会话 ID 会实时获取，旧的 xm-sign 不保存为发布凭据。
+
+纯 Node 的真实发布验证尚待执行。完成之前，仅将上传、算法对照及会话上报标为已验证。
