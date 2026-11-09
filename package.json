@@ -1,0 +1,15 @@
+{
+  "name": "ximalaya-studio-cli",
+  "version": "0.1.0",
+  "description": "喜马拉雅创作中心命令行工具",
+  "type": "module",
+  "bin": { "xmly": "bin/xmly.mjs" },
+  "engines": { "node": ">=22" },
+  "files": ["bin", "lib", "README.md", "docs", "examples"],
+  "scripts": {
+    "check": "find bin lib -name '*.mjs' -exec node --check {} +",
+    "test": "node --test",
+    "prepack": "npm run check",
+    "pack:dry": "npm pack --dry-run"
+  }
+}

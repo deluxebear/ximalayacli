@@ -1,0 +1,6 @@
+node_modules/
+.env*
+*.tgz
+.private/
+outputs/
+*.har
