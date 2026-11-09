@@ -57,6 +57,8 @@ const commands = [
   "config get",
   "config set",
   "commands list",
+  "skills list",
+  "skills install",
   "completion",
 ];
 const strings = [
@@ -102,6 +104,9 @@ const strings = [
   "access",
   "source",
   "max-packs",
+  "agent",
+  "skill",
+  "target-dir",
 ];
 const bools = [
   "help",
@@ -113,6 +118,7 @@ const bools = [
   "offline",
   "no-wait",
   "refresh",
+  "force",
 ];
 const options = Object.fromEntries([
   ...strings.map((x) => [x, { type: "string" }]),
@@ -167,6 +173,9 @@ function help() {
   jobs resolve --id 指纹 --resolution done|retry  人工核对后处理结果不确定项
   config list|get|set [键] [值]       用户配置
   commands list                      命令注册表
+  skills list                        查看内置 Agent 技能
+  skills install [--agent codex|claude|all]  安装技能，默认 Codex 全部技能
+    [--skill xmly-music,xmly-cv] [--target-dir 目录] [--dry-run] [--force]
   completion bash|zsh|fish            生成补全脚本
 
 设置：--title 标题 --intro 简介 --intro-file 文件 --tags JSON
@@ -240,7 +249,10 @@ async function main() {
     if (!v.quiet)
       console.log(JSON.stringify(redact(r), null, v.compact ? 0 : 2));
   };
-  if (a[0] === "music") {
+  if (a[0] === "skills") {
+    const { runSkillsCommand } = await import("../lib/skills.mjs");
+    result = await runSkillsCommand(a, v);
+  } else if (a[0] === "music") {
     const { runMusicCommand } = await import("../lib/music-cli.mjs");
     result = await runMusicCommand(a, v, p, config);
   } else if (a[0] === "materials") {
@@ -292,6 +304,7 @@ async function main() {
       "music",
       "cv",
       "materials",
+      "skills",
     ];
     const shell = a[1];
     if (shell === "bash")

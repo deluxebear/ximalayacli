@@ -6,10 +6,43 @@
 
 ## 安装与登录
 
-需要 Node.js 22+ 和本机安装的 Google Chrome。首次扫码登录和初始化设备登记直接使用系统 Chrome，不需要 Ego Lite、扩展或额外 npm 依赖。登录完成后，日常查询、上传、发布及素材获取不再要求浏览器运行。
+先安装 Node.js 22+（包含 npm）和 Git，macOS/Linux 可用一条命令安装整个 CLI：
 
 ```bash
-npm link
+curl -fsSL https://raw.githubusercontent.com/deluxebear/ximalayacli/main/install.sh | sh
+```
+
+该命令下载安装脚本，在临时目录克隆 GitHub 当前已推送的源码，将完整 CLI 打包后全局安装，包含 `xmly` 命令及该版本内置的 Skills 文件；安装完成后清理临时目录，不依赖源码目录。仓库已公开，无需 GitHub 登录。安装本身不会登录喜马拉雅账号，也不会自动把 Skills 写入 Agent 目录。
+
+需要自定义前缀或固定版本时：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/deluxebear/ximalayacli/main/install.sh | sh -s -- --prefix "$HOME/.local"
+# 将 REF 替换为实际分支、标签或提交
+curl -fsSL https://raw.githubusercontent.com/deluxebear/ximalayacli/main/install.sh | sh -s -- --ref REF
+```
+
+也可先克隆并检查脚本，再从源码安装：
+
+```bash
+git clone https://github.com/deluxebear/ximalayacli.git && sh ximalayacli/install.sh --source ./ximalayacli
+```
+
+已取得本项目代码时，macOS/Linux 也可使用安装脚本：
+
+```bash
+sh install.sh
+# 自定义安装目录，避免写入系统全局目录
+sh install.sh --prefix "$HOME/.local"
+```
+
+自定义前缀时将其 `bin/` 目录加入 PATH。默认先通过 Git 克隆远端、打包再安装，避免 npm 直接安装 Git 来源可能产生的缺失文件问题。脚本支持 `--ref 分支/标签/提交` 固定来源、`--source /path/to/source` 安装本地源码、`--source /path/to/package.tgz` 安装本地包；不会自动安装 Node.js、修改 shell 配置或使用 sudo。
+
+已克隆本仓库时，可执行 `sh install.sh` 安装远端已推送版本；安装当前尚未推送的本地代码使用 `sh install.sh --source .`。更新远端版本时重新执行 `sh install.sh`，或传 `--ref` 固定版本。开发调试仍可用 `npm link` 创建源码链接。Windows 可使用 Git Bash 执行脚本，或用下文的 `npm pack` 与本地 tarball 安装方式。
+
+首次扫码登录需要本机安装 Google Chrome。首次登录和初始化设备登记直接使用系统 Chrome，不需要 Ego Lite、扩展或额外 npm 依赖。登录完成后，日常查询、上传、发布及素材获取不再要求浏览器运行。
+
+```bash
 xmly --help
 xmly auth login
 # 在弹出的 Chrome 窗口中使用喜马拉雅 APP 扫码。
@@ -33,14 +66,34 @@ macOS 自动查找 `/Applications/Google Chrome.app`，Windows/Linux 也支持�
 
 凭据保存在 `~/.ximalaya-cli/profiles/default/auth.json`，文件权限为 `0600`。配置、任务记录也在 `~/.ximalaya-cli/`；可通过 `XMLY_HOME` 修改根目录，或用 `--profile NAME` 隔离账号记录。设备登记保存在同目录的 `signer.json`，权限同样为 `0600`。这些状态需要来自同一个账号；不会保存或重放旧的会话签名。
 
-本项目尚未发布到 npm。也可以打包后安装：
+本项目尚未发布到 npm 注册表。无需公共包名，除了上述 GitHub 安装方式，也可在仓库内打包后安装：
 
 ```bash
 npm pack
 npm install -g ./ximalaya-studio-cli-0.4.0.tgz
+# 或让安装脚本安装本地包
+sh install.sh --source ./ximalaya-studio-cli-0.4.0.tgz
 # 或从本地目录临时运行
 npx --package . xmly --help
 ```
+
+## 给 Agent 使用的 Skills
+
+项目提供三个可独立复制的技能，使用通用 `SKILL.md` 结构并随 npm 包分发：
+
+- [xmly-music](skills/xmly-music/SKILL.md)：配乐、音效、本地优先获取和素材包。
+- [xmly-cv](skills/xmly-cv/SKILL.md)：主播与样音检索、本地优先复用。
+- [xmly-studio](skills/xmly-studio/SKILL.md)：专辑、上传发布、作品编辑和批量恢复。
+
+安装 `xmly` 后，一条命令即可安装技能，无需登录或联网：
+
+```bash
+xmly skills install                 # 默认 Codex，安装三个技能
+xmly skills install --agent claude  # Claude Code
+xmly skills install --agent all --dry-run  # 预览两个 Agent 的安装位置
+```
+
+支持 `--skill xmly-music,xmly-cv` 选择技能、`--target-dir` 自定义目录。相同内容跳过，修改过的目标默认不覆盖；`--force` 先备份再更新。安装和调用方式见 [Skills 安装说明](skills/README.md)。技能不包含凭据，安装后按 Agent 的发现机制重新加载或开启新会话。
 
 ## 配乐与音效：先复用，再获取
 

@@ -2,6 +2,10 @@
   "name": "ximalaya-studio-cli",
   "version": "0.4.0",
   "description": "喜马拉雅创作中心命令行工具",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deluxebear/ximalayacli.git"
+  },
   "type": "module",
   "bin": {
     "xmly": "bin/xmly.mjs"
@@ -14,6 +18,8 @@
     "lib",
     "README.md",
     "docs",
+    "skills",
+    "install.sh",
     "examples"
   ],
   "scripts": {

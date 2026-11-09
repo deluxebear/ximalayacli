@@ -1,0 +1,3 @@
+interface:
+  display_name: "喜马拉雅配乐与音效"
+  short_description: "通过 xmly 搜索配乐与音效，本地优先获取完整音频并复用素材包"
